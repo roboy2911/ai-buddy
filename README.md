@@ -75,6 +75,8 @@ When you're done, press **Ctrl+C** in the buddy's terminal. It saves a summary o
 | `VOICE` | Voice to use: `am_michael`, `am_adam`, `af_heart`, `af_bella`, `bm_george`, `bf_emma`, and [more](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX#voicesamples) |
 | `VOICE_SPEED` | Talking speed (1.0 is normal) |
 | `EFFORT` | How hard the brain thinks. `low` gives the fastest replies; `medium` and `high` are smarter but slower and use more credits |
+| `TTS_DEVICE` / `STT_DEVICE` | `auto` (default) runs the voice and hearing on your graphics card on Windows, and falls back to the CPU if that fails. `cpu` forces the CPU |
+| `DEBUG_TIMING` | Set to `1` to print how long hearing and speaking take |
 | `WHISPER_MODEL` | Use `onnx-community/whisper-small.en` if it mishears you a lot (slower) |
 | `MC_HOST` / `MC_PORT` | Where the Minecraft server is |
 

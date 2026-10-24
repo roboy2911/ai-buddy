@@ -1,16 +1,21 @@
 // Speech-to-text with Whisper. Runs locally on your PC, free.
 import { pipeline } from "@huggingface/transformers";
 import { config } from "../config.js";
+import { pickDevice, loadWithFallback } from "./device.js";
 
 let asr = null;
 
 export async function loadSTT() {
   console.log(`[ears] Loading Whisper (${config.whisperModel})...`);
-  asr = await pipeline("automatic-speech-recognition", config.whisperModel, {
-    dtype: "q8",
-    device: "cpu",
-  });
-  console.log("[ears] Whisper ready.");
+  asr = await loadWithFallback(
+    "ears",
+    pickDevice(config.sttDevice),
+    (device) => pipeline("automatic-speech-recognition", config.whisperModel, {
+      dtype: device === "cpu" ? "q8" : "fp32",
+      device,
+    }),
+    (model) => model(new Float32Array(16000)),
+  );
 }
 
 // Whisper often "hears" these on silence or noise. Ignore them.
