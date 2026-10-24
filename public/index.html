@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Buddy Voice</title>
+<style>
+  :root { --bg:#14171c; --panel:#1d2128; --text:#e8eaed; --muted:#8a919c; --you:#3b82f6; --buddy:#22c55e; --warn:#f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:20px 16px; display:flex; flex-direction:column; gap:14px; min-height:100vh; }
+  header { display:flex; align-items:center; gap:12px; }
+  h1 { font-size:20px; margin:0; flex:1; }
+  #status { color:var(--muted); font-size:13px; }
+  .panel { background:var(--panel); border-radius:10px; padding:14px; }
+  #start { font-size:17px; padding:14px; border:0; border-radius:10px; background:var(--buddy); color:#06240f; font-weight:600; cursor:pointer; width:100%; }
+  #controls { display:none; flex-direction:column; gap:10px; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .meter { flex:1; min-width:120px; height:10px; background:#0d0f13; border-radius:5px; overflow:hidden; position:relative; }
+  #level { height:100%; width:0; background:var(--you); transition:width 60ms; }
+  #thresholdMark { position:absolute; top:0; bottom:0; width:2px; background:var(--warn); }
+  label { color:var(--muted); font-size:13px; }
+  input[type=range] { flex:1; min-width:120px; }
+  #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; min-height:200px; max-height:55vh; }
+  .msg { padding:8px 12px; border-radius:10px; max-width:85%; }
+  .you { background:#1e3a5f; align-self:flex-end; }
+  .buddy { background:#173d26; align-self:flex-start; }
+  .who { font-size:11px; color:var(--muted); display:block; }
+  form { display:flex; gap:8px; }
+  #text { flex:1; padding:10px; border-radius:8px; border:1px solid #333a45; background:#0d0f13; color:var(--text); font-size:15px; }
+  button.small { padding:10px 14px; border:0; border-radius:8px; background:#333a45; color:var(--text); cursor:pointer; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#555; display:inline-block; }
+  .dot.on { background:#ef4444; box-shadow:0 0 8px #ef4444; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">AI Buddy</h1>
+    <span class="dot" id="dot" title="Recording"></span>
+    <span id="status">connecting...</span>
+  </header>
+
+  <button id="start">Start voice chat</button>
+
+  <div class="panel" id="controls">
+    <div class="row">
+      <label style="width:90px">Mic level</label>
+      <div class="meter"><div id="level"></div><div id="thresholdMark"></div></div>
+    </div>
+    <div class="row">
+      <label style="width:90px" for="sens">Sensitivity</label>
+      <input type="range" id="sens" min="1" max="100" value="60">
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="headphones"> I'm wearing headphones (lets me keep listening while the buddy talks)</label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="muted"> Mute my mic</label>
+    </div>
+  </div>
+
+  <div class="panel" id="log"></div>
+
+  <form id="form">
+    <input id="text" placeholder="Or type to your buddy..." autocomplete="off">
+    <button class="small">Send</button>
+  </form>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+$("sens").value = store.get("sens", 60);
+$("headphones").checked = store.get("headphones", "0") === "1";
+$("sens").oninput = () => { store.set("sens", $("sens").value); updateMark(); };
+$("headphones").onchange = () => store.set("headphones", $("headphones").checked ? "1" : "0");
+
+// ---------- Connection to the buddy ----------
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setStatus("connected");
+  ws.onclose = () => { setStatus("disconnected - is the buddy app running?"); setTimeout(connect, 2000); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== "string") return playWav(ev.data);
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "hello") { $("title").textContent = msg.name; document.title = msg.name + " Voice"; }
+    if (msg.type === "status") setStatus(msg.text);
+    if (msg.type === "log") addLog(msg.who, msg.text);
+  };
+}
+connect();
+
+function setStatus(t) { $("status").textContent = t; }
+function addLog(who, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + who;
+  div.innerHTML = `<span class="who">${who === "you" ? "You" : $("title").textContent}</span>`;
+  div.appendChild(document.createTextNode(text));
+  $("log").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+$("form").onsubmit = (e) => {
+  e.preventDefault();
+  const t = $("text").value.trim();
+  if (t && ws.readyState === 1) ws.send(JSON.stringify({ type: "text", text: t }));
+  $("text").value = "";
+};
+
+// ---------- Playing the buddy's voice ----------
+let playCtx, playUntil = 0;
+async function playWav(buf) {
+  playCtx ||= new AudioContext();
+  const audio = await playCtx.decodeAudioData(buf);
+  const src = playCtx.createBufferSource();
+  src.buffer = audio;
+  src.connect(playCtx.destination);
+  const start = Math.max(playCtx.currentTime + 0.05, playUntil);
+  src.start(start);
+  playUntil = start + audio.duration;
+}
+const buddyTalking = () => playCtx && playCtx.currentTime < playUntil + 0.3;
+
+// ---------- Listening to you ----------
+// Simple voice detection: record while you're loud enough, send when you stop.
+const RATE = 16000;
+let threshold = 0.02;
+function updateMark() {
+  // Sensitivity 100 = picks up quiet voices, 1 = only loud.
+  threshold = 0.002 + (100 - $("sens").value) / 100 * 0.08;
+  $("thresholdMark").style.left = Math.min(100, threshold / 0.1 * 100) + "%";
+}
+updateMark();
+
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  playCtx ||= new AudioContext();
+  await playCtx.resume();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  } catch (e) {
+    $("start").disabled = false;
+    $("start").textContent = "Microphone blocked - click to try again";
+    return;
+  }
+  $("start").style.display = "none";
+  $("controls").style.display = "flex";
+
+  const ctx = new AudioContext({ sampleRate: RATE });
+  const workletCode = `
+    class Grab extends AudioWorkletProcessor {
+      process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+    }
+    registerProcessor("grab", Grab);`;
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" })));
+  const node = new AudioWorkletNode(ctx, "grab");
+  ctx.createMediaStreamSource(stream).connect(node);
+
+  let chunks = [], recording = false, silentFor = 0, speechLen = 0;
+  const pre = []; // keep a little audio from before you started talking
+  const PRE_CHUNKS = 10, END_SILENCE = 0.8 * RATE, MIN_SPEECH = 0.35 * RATE, MAX_LEN = 20 * RATE;
+
+  node.port.onmessage = ({ data }) => {
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    $("level").style.width = Math.min(100, rms / 0.1 * 100) + "%";
+
+    const blocked = $("muted").checked || (!$("headphones").checked && buddyTalking());
+    if (blocked) { if (recording) reset(); return; }
+
+    const loud = rms > threshold;
+    if (!recording) {
+      pre.push(data); if (pre.length > PRE_CHUNKS) pre.shift();
+      if (loud) { recording = true; chunks = pre.splice(0); silentFor = 0; speechLen = 0; $("dot").classList.add("on"); }
+      return;
+    }
+    chunks.push(data);
+    if (loud) { silentFor = 0; speechLen += data.length; } else silentFor += data.length;
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    if (silentFor > END_SILENCE || total > MAX_LEN) {
+      if (speechLen > MIN_SPEECH && ws.readyState === 1) {
+        const out = new Float32Array(total);
+        let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; }
+        ws.send(out.buffer);
+      }
+      reset();
+    }
+  };
+  function reset() { recording = false; chunks = []; $("dot").classList.remove("on"); }
+};
+</script>
+</body>
+</html>
