@@ -1,7 +1,7 @@
 // Text-to-speech with Kokoro. Runs locally on your PC, free.
 import { KokoroTTS } from "kokoro-js";
 import { config } from "../config.js";
-import { pickDevice, loadWithFallback } from "./device.js";
+import { loadWithFallback } from "./device.js";
 
 let tts = null;
 
@@ -9,7 +9,8 @@ export async function loadTTS() {
   console.log("[voice] Loading Kokoro voice (first run downloads ~330 MB)...");
   tts = await loadWithFallback(
     "voice",
-    pickDevice(config.ttsDevice),
+    // Kokoro doesn't run on DirectML, so "auto" means CPU here. The voice page uses the graphics card instead.
+    config.ttsDevice === "auto" ? "cpu" : config.ttsDevice,
     // fp32 is the fastest choice on both CPU and graphics cards.
     (device) => KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", { dtype: "fp32", device }),
     (model) => model.generate("Hi there.", { voice: config.voice }),

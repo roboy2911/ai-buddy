@@ -10,6 +10,7 @@ const { pathfinder, Movements } = pathfinderPkg;
 
 export const events = new EventEmitter();
 export let bot = null;
+let dangerTimer = null;
 
 const HOSTILE = new Set([
   "zombie", "husk", "drowned", "skeleton", "stray", "bogged", "creeper", "spider", "cave_spider",
@@ -42,6 +43,16 @@ export function startBot() {
     bot.loadPlugin(collectPkg.plugin);
 
     let spawned = false;
+    let failed = false;
+    const fail = (err) => {
+      if (spawned || failed) return;
+      failed = true;
+      // Clean up the failed attempt so retries don't pile up.
+      bot.removeAllListeners();
+      bot.on("error", () => {});
+      try { bot.end(); } catch {}
+      reject(err);
+    };
     bot.once("spawn", () => {
       spawned = true;
       const moves = new Movements(bot);
@@ -53,16 +64,18 @@ export function startBot() {
       resolve(bot);
     });
     bot.on("error", (err) => {
-      console.error("[bot] Error:", err.message);
-      if (!spawned) reject(err);
+      if (spawned) console.error("[bot] Error:", err.message);
+      fail(err);
     });
     bot.on("kicked", (reason) => {
       const text = typeof reason === "string" ? reason : JSON.stringify(reason);
       console.error("[bot] Kicked:", text);
-      if (!spawned) reject(new Error("Kicked: " + text));
+      fail(new Error("Kicked: " + text));
     });
     bot.on("end", () => {
+      if (!spawned) return fail(new Error("Connection closed"));
       console.log("[bot] Disconnected.");
+      clearInterval(dangerTimer);
       events.emit("disconnected");
     });
   });
@@ -125,7 +138,8 @@ function wireEvents() {
 
   // Warn about monsters close to the player, at most every 20 seconds.
   let lastDanger = 0;
-  setInterval(() => {
+  clearInterval(dangerTimer);
+  dangerTimer = setInterval(() => {
     const p = getPlayer();
     if (!p?.entity || Date.now() - lastDanger < 20000) return;
     const threat = bot.nearestEntity((e) => isHostile(e) && e.position.distanceTo(p.entity.position) < 6);

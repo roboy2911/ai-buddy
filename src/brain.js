@@ -14,6 +14,9 @@ const history = []; // append-only conversation with Claude
 const transcript = []; // plain-text log of this session, for the end-of-session summary
 let onSay = () => {};
 let onStatus = () => {};
+let onInterrupt = () => {};
+let lastPlayerAt = 0;
+const MAX_SENTENCES = 3; // per reply, so it doesn't ramble
 
 function buildSystemPrompt() {
   return `You are ${config.mc.username}, the player's AI best friend who plays Minecraft with them. You're in their world as your own character, and you talk with them over voice chat.
@@ -21,22 +24,25 @@ function buildSystemPrompt() {
 Personality: chill, funny, a little cheeky, loyal. You talk like a real friend on voice chat, not an assistant. React to what happens. Tease them a bit when they mess up, hype them up when they do something cool. Have your own opinions about builds, strategies and what to do next.
 
 How you talk (everything you write is spoken aloud by a text-to-speech voice):
-- Keep it short: usually one or two sentences. Never lecture.
+- Keep it SHORT. Usually one sentence, at most two. Long replies make you lag behind the game.
+- Talk once per reply. If you use tools, say one quick line either before or after them, not both.
+- Don't fill silence. Friends don't comment on everything.
 - Plain spoken words only. No markdown, lists, emojis, asterisks or stage directions.
 - Say numbers and coordinates the way a person would say them.
 - Don't narrate your tool calls ("I will now call follow_player"). Just say it naturally ("Yeah, I'm right behind you").
 
 What you can do: use your tools to act in the game. When the player asks you to do something, do it with a tool and confirm briefly. Long jobs (following, mining, guarding) keep running in the background; you'll get a "Task finished" or "Task failed" event later.
 
-Each message includes [Game state] showing what you can currently see. Messages that start with [Game event] are things that just happened, not the player talking. For a game event, react only if a friend would actually say something (danger, deaths, cool moments). Otherwise reply with exactly ${SILENT} and nothing else.
+Each message includes [Game state] showing what you can currently see. Messages that start with [Game event] are things that just happened, not the player talking. For a game event, only speak if it really matters (real danger, someone died, something big). Most of the time reply with exactly ${SILENT} and nothing else.
 
 Getting to know the player: you want to become a real friend who knows them well. Over time, naturally learn about them: their name, what they like to build, how they play, what they're into outside the game, their goals. Ask about them sometimes, but don't interrogate. Whenever you learn something worth knowing next time (a fact about them, a preference, something memorable you did together, an inside joke), save it with the remember tool. Bring up past memories naturally when they fit, like a friend would.
 
 ${memoryForPrompt()}`;
 }
 
-export function initBrain({ say, status }) {
+export function initBrain({ say, status, interrupt }) {
   onSay = say;
+  onInterrupt = interrupt || (() => {});
   onStatus = status || (() => {});
   system = buildSystemPrompt();
   if (!config.mockBrain) client = new Anthropic();
@@ -48,15 +54,20 @@ let busy = false;
 let lastEventAt = 0;
 
 export function hear(text, source = "voice") {
+  // You talking cuts off whatever the buddy was still going to say.
+  onInterrupt();
+  lastPlayerAt = Date.now();
   inbox.push({ kind: "player", text, source });
   transcript.push(`Player: ${text}`);
   pump();
 }
 
-export function gameEvent(text) {
-  // Don't let events flood the brain (and your credits).
-  if (Date.now() - lastEventAt < 8000) return;
-  lastEventAt = Date.now();
+export function gameEvent(text, { force = false } = {}) {
+  // Don't let events flood the conversation (or your credits):
+  // skip them while it's busy, right after you talked, or if it commented recently.
+  const now = Date.now();
+  if (!force && (busy || inbox.length || now - lastPlayerAt < 20000 || now - lastEventAt < 45000)) return;
+  lastEventAt = now;
   inbox.push({ kind: "event", text });
   pump();
 }
@@ -108,12 +119,14 @@ async function think(userText) {
   if (config.mockBrain) return mockThink(userText);
   history.push({ role: "user", content: userText });
 
+  let sentences = 0; // across the whole reply, including after tool calls
   for (let step = 0; step < 6; step++) {
     let spoken = "";
     let silent = false;
     const splitter = sentenceSplitter((s) => {
       if (s.startsWith(SILENT) || s === "(silent") { silent = true; return; }
-      if (silent) return;
+      if (silent || sentences >= MAX_SENTENCES) return;
+      sentences++;
       spoken += s + " ";
       onSay(s);
     });

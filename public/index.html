@@ -60,6 +60,7 @@
     </div>
   </div>
 
+  <div id="voiceInfo" style="color:var(--muted);font-size:13px"></div>
   <div class="panel" id="log"></div>
 
   <form id="form">
@@ -81,12 +82,14 @@ let ws;
 function connect() {
   ws = new WebSocket(`ws://${location.host}`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => setStatus("connected");
+  ws.onopen = () => { setStatus("connected"); announceVoice(); };
   ws.onclose = () => { setStatus("disconnected - is the buddy app running?"); setTimeout(connect, 2000); };
   ws.onmessage = (ev) => {
     if (typeof ev.data !== "string") { playChain = playChain.then(() => playWav(ev.data)).catch(() => {}); return; }
     const msg = JSON.parse(ev.data);
-    if (msg.type === "hello") { $("title").textContent = msg.name; document.title = msg.name + " Voice"; }
+    if (msg.type === "hello") { $("title").textContent = msg.name; document.title = msg.name + " Voice"; voiceCfg = { voice: msg.voice, speed: msg.speed }; }
+    if (msg.type === "speak") { const t = msg.text, g = speakGen; speakChain = speakChain.then(() => g === speakGen && gpuSpeak(t, g)).catch((e) => { console.error(e); addLog("buddy", t); }); }
+    if (msg.type === "stop") stopSpeaking();
     if (msg.type === "status") setStatus(msg.text);
     if (msg.type === "log") addLog(msg.who, msg.text);
     if (msg.type === "say") { if (msg.hasAudio) pendingText.push(msg.text); else addLog("buddy", msg.text); }
@@ -112,21 +115,56 @@ $("form").onsubmit = (e) => {
 };
 
 // ---------- Playing the buddy's voice ----------
-let playCtx, playUntil = 0, playChain = Promise.resolve();
+let playCtx, playUntil = 0, playChain = Promise.resolve(), speakChain = Promise.resolve();
 const pendingText = [];
+let voiceCfg = { voice: "am_michael", speed: 1.1 };
+let speakGen = 0;
+const playing = new Set();
+
+// You started talking: cut the buddy off and drop anything it was about to say.
+function stopSpeaking() {
+  speakGen++;
+  pendingText.length = 0;
+  for (const src of playing) { try { src.stop(); } catch {} }
+  playing.clear();
+  if (playCtx) playUntil = playCtx.currentTime;
+}
+
+// Voice made by the buddy app (on your CPU), sent here as a WAV file.
 async function playWav(buf) {
   playCtx ||= new AudioContext();
   const text = pendingText.shift();
-  const audio = await playCtx.decodeAudioData(buf);
+  playBuffer(await playCtx.decodeAudioData(buf), text);
+}
+
+// Voice made right here in the browser on your graphics card (much faster).
+async function gpuSpeak(text, gen) {
+  const out = await window.gpuVoice.generate(text, voiceCfg);
+  if (gen !== speakGen) return; // you interrupted while it was being made
+  playCtx ||= new AudioContext();
+  const buf = playCtx.createBuffer(1, out.audio.length, out.sampling_rate);
+  buf.copyToChannel(out.audio, 0);
+  playBuffer(buf, text);
+}
+
+function playBuffer(audio, text) {
   const src = playCtx.createBufferSource();
   src.buffer = audio;
   src.connect(playCtx.destination);
   const start = Math.max(playCtx.currentTime + 0.05, playUntil);
   src.start(start);
   playUntil = start + audio.duration;
-  if (text) setTimeout(() => addLog("buddy", text), Math.max(0, (start - playCtx.currentTime) * 1000));
+  playing.add(src);
+  src.onended = () => playing.delete(src);
+  const gen = speakGen;
+  if (text) setTimeout(() => { if (gen === speakGen) addLog("buddy", text); }, Math.max(0, (start - playCtx.currentTime) * 1000));
 }
 const buddyTalking = () => playCtx && playCtx.currentTime < playUntil + 0.3;
+
+// Tell the buddy app this page can make the voice itself.
+function announceVoice() {
+  if (window.gpuVoice && ws?.readyState === 1) ws.send(JSON.stringify({ type: "capabilities", browserVoice: true }));
+}
 
 // ---------- Listening to you ----------
 // Simple voice detection: record while you're loud enough, send when you stop.
@@ -218,6 +256,29 @@ $("start").onclick = async () => {
   track.addEventListener("ended", finish);
   $("muted").addEventListener("change", () => { if ($("muted").checked) finish(); });
 };
+</script>
+<script type="module">
+// Load the Kokoro voice onto your graphics card with WebGPU.
+// If that isn't possible, the buddy app makes the voice on the CPU instead.
+import { KokoroTTS } from "/vendor/kokoro.web.js";
+const status = (t) => { document.getElementById("voiceInfo").textContent = t; };
+if (!navigator.gpu) {
+  status("Voice: on CPU (this browser has no WebGPU, try Chrome or Edge)");
+} else {
+  status("Voice: loading onto your graphics card (first time downloads ~330 MB)...");
+  try {
+    const tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", { dtype: "fp32", device: "webgpu" });
+    await tts.generate("Hi.", { voice: "am_michael" });
+    window.gpuVoice = {
+      generate: (text, { voice, speed }) => tts.generate(text, { voice, speed }),
+    };
+    status("Voice: running on your graphics card");
+    announceVoice();
+  } catch (e) {
+    console.error(e);
+    status("Voice: on CPU (graphics card failed: " + e.message + ")");
+  }
+}
 </script>
 </body>
 </html>
