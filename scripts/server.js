@@ -5,6 +5,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { spawn, spawnSync } from "child_process";
+import crypto from "crypto";
+import "dotenv/config";
 import mineflayer from "mineflayer";
 
 const version = process.argv[2] || mineflayer.latestSupportedVersion;
@@ -40,6 +42,30 @@ if (!fs.existsSync(propsFile)) {
     "difficulty=normal",
     "",
   ].join("\n"));
+}
+
+// Make the player (PLAYER_NAME in .env, plus anyone in OPS) a server operator.
+// Offline-mode servers identify players by a UUID made from their name.
+function offlineUuid(name) {
+  const h = crypto.createHash("md5").update("OfflinePlayer:" + name).digest();
+  h[6] = (h[6] & 0x0f) | 0x30;
+  h[8] = (h[8] & 0x3f) | 0x80;
+  const x = h.toString("hex");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
+const opNames = [process.env.PLAYER_NAME, ...(process.env.OPS || "").split(",")]
+  .map((n) => (n || "").trim()).filter(Boolean);
+if (opNames.length) {
+  const opsFile = path.join(dir, "ops.json");
+  let ops = [];
+  try { ops = JSON.parse(fs.readFileSync(opsFile, "utf8")); } catch {}
+  for (const name of opNames) {
+    if (!ops.some((o) => o.name.toLowerCase() === name.toLowerCase())) {
+      ops.push({ uuid: offlineUuid(name), name, level: 4, bypassesPlayerLimit: false });
+    }
+  }
+  fs.writeFileSync(opsFile, JSON.stringify(ops, null, 2));
+  console.log(`Operators: ${ops.map((o) => o.name).join(", ")}`);
 }
 
 // Find Java: the copy bundled with the Minecraft Launcher works.
