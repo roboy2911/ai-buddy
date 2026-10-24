@@ -19,7 +19,9 @@ const JUNK = /^(\s*(thank you|thanks for watching|you|bye|\.|\[.*\]|\(.*\))[.!]?
 // samples: Float32Array of mono audio at 16 kHz.
 export async function transcribe(samples) {
   if (!asr) throw new Error("STT not loaded");
+  const t = Date.now();
   const result = await asr(samples);
+  if (config.debugTiming) console.log(`[ears] ${Date.now() - t} ms to understand ${(samples.length / 16000).toFixed(1)} s of audio`);
   const text = (result.text || "").trim();
   if (!text || JUNK.test(text)) return "";
   return text;

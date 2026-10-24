@@ -15,6 +15,8 @@ export const config = {
   effort: env.EFFORT || "low",
   voice: env.VOICE || "am_michael",
   voiceSpeed: Number(env.VOICE_SPEED || 1.1),
+  ttsDevice: env.TTS_DEVICE || "cpu",
+  debugTiming: env.DEBUG_TIMING === "1",
   whisperModel: env.WHISPER_MODEL || "onnx-community/whisper-base.en",
   webPort: Number(env.WEB_PORT || 3000),
   dataDir: env.DATA_DIR || "./data",

@@ -17,13 +17,15 @@ loadMemory();
 let speechQueue = Promise.resolve();
 function say(text) {
   console.log(`${config.mc.username}: ${text}`);
-  broadcast({ type: "log", who: "buddy", text });
+  // One sentence at a time, in order (parallel would slow down the first one).
   speechQueue = speechQueue.then(async () => {
-    try {
-      broadcastAudio(await speak(text));
-    } catch (e) {
+    const wav = await speak(text).catch((e) => {
       console.error("[voice]", e.message);
-    }
+      return null;
+    });
+    // The page shows the text when this clip starts playing.
+    broadcast({ type: "say", text, hasAudio: !!wav });
+    if (wav) broadcastAudio(wav);
   });
 }
 

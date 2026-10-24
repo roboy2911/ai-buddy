@@ -84,11 +84,12 @@ function connect() {
   ws.onopen = () => setStatus("connected");
   ws.onclose = () => { setStatus("disconnected - is the buddy app running?"); setTimeout(connect, 2000); };
   ws.onmessage = (ev) => {
-    if (typeof ev.data !== "string") return playWav(ev.data);
+    if (typeof ev.data !== "string") { playChain = playChain.then(() => playWav(ev.data)).catch(() => {}); return; }
     const msg = JSON.parse(ev.data);
     if (msg.type === "hello") { $("title").textContent = msg.name; document.title = msg.name + " Voice"; }
     if (msg.type === "status") setStatus(msg.text);
     if (msg.type === "log") addLog(msg.who, msg.text);
+    if (msg.type === "say") { if (msg.hasAudio) pendingText.push(msg.text); else addLog("buddy", msg.text); }
   };
 }
 connect();
@@ -111,9 +112,11 @@ $("form").onsubmit = (e) => {
 };
 
 // ---------- Playing the buddy's voice ----------
-let playCtx, playUntil = 0;
+let playCtx, playUntil = 0, playChain = Promise.resolve();
+const pendingText = [];
 async function playWav(buf) {
   playCtx ||= new AudioContext();
+  const text = pendingText.shift();
   const audio = await playCtx.decodeAudioData(buf);
   const src = playCtx.createBufferSource();
   src.buffer = audio;
@@ -121,6 +124,7 @@ async function playWav(buf) {
   const start = Math.max(playCtx.currentTime + 0.05, playUntil);
   src.start(start);
   playUntil = start + audio.duration;
+  if (text) setTimeout(() => addLog("buddy", text), Math.max(0, (start - playCtx.currentTime) * 1000));
 }
 const buddyTalking = () => playCtx && playCtx.currentTime < playUntil + 0.3;
 
@@ -160,38 +164,59 @@ $("start").onclick = async () => {
   const node = new AudioWorkletNode(ctx, "grab");
   ctx.createMediaStreamSource(stream).connect(node);
 
-  let chunks = [], recording = false, silentFor = 0, speechLen = 0;
+  let chunks = [], total = 0, recording = false, speechLen = 0, lastLoudAt = 0, lastFrameAt = 0;
   const pre = []; // keep a little audio from before you started talking
-  const PRE_CHUNKS = 10, END_SILENCE = 0.8 * RATE, MIN_SPEECH = 0.35 * RATE, MAX_LEN = 20 * RATE;
+  const PRE_CHUNKS = 10, END_SILENCE_MS = 700, MIN_SPEECH = 0.3 * RATE, MAX_LEN = 20 * RATE;
+
+  // Send what you said. Called when you go quiet, mute, or the mic stops.
+  function finish() {
+    if (!recording) return;
+    if (speechLen > MIN_SPEECH && ws.readyState === 1) {
+      const out = new Float32Array(total);
+      let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; }
+      ws.send(out.buffer);
+    }
+    reset();
+  }
+  function reset() { recording = false; chunks = []; total = 0; $("dot").classList.remove("on"); }
 
   node.port.onmessage = ({ data }) => {
+    lastFrameAt = performance.now();
     let sum = 0;
     for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
     const rms = Math.sqrt(sum / data.length);
     $("level").style.width = Math.min(100, rms / 0.1 * 100) + "%";
 
-    const blocked = $("muted").checked || (!$("headphones").checked && buddyTalking());
-    if (blocked) { if (recording) reset(); return; }
+    if ($("muted").checked) return finish();
+    // Without headphones, ignore the mic while the buddy talks so it doesn't hear itself.
+    if (!$("headphones").checked && buddyTalking()) { if (recording) reset(); return; }
 
     const loud = rms > threshold;
     if (!recording) {
       pre.push(data); if (pre.length > PRE_CHUNKS) pre.shift();
-      if (loud) { recording = true; chunks = pre.splice(0); silentFor = 0; speechLen = 0; $("dot").classList.add("on"); }
+      if (loud) {
+        recording = true; chunks = pre.splice(0); total = chunks.reduce((s, c) => s + c.length, 0);
+        speechLen = 0; lastLoudAt = performance.now(); $("dot").classList.add("on");
+      }
       return;
     }
-    chunks.push(data);
-    if (loud) { silentFor = 0; speechLen += data.length; } else silentFor += data.length;
-    const total = chunks.reduce((s, c) => s + c.length, 0);
-    if (silentFor > END_SILENCE || total > MAX_LEN) {
-      if (speechLen > MIN_SPEECH && ws.readyState === 1) {
-        const out = new Float32Array(total);
-        let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; }
-        ws.send(out.buffer);
-      }
-      reset();
-    }
+    chunks.push(data); total += data.length;
+    if (loud) { speechLen += data.length; lastLoudAt = performance.now(); }
+    if (total > MAX_LEN) finish();
   };
-  function reset() { recording = false; chunks = []; $("dot").classList.remove("on"); }
+
+  // Checks on a timer, so muting (which can stop the sound completely) still sends right away.
+  setInterval(() => {
+    if (!recording) return;
+    const now = performance.now();
+    if (now - lastFrameAt > 300 || now - lastLoudAt > END_SILENCE_MS) finish();
+  }, 100);
+
+  // Muting your headset or Windows mic.
+  const track = stream.getAudioTracks()[0];
+  track.addEventListener("mute", finish);
+  track.addEventListener("ended", finish);
+  $("muted").addEventListener("change", () => { if ($("muted").checked) finish(); });
 };
 </script>
 </body>
